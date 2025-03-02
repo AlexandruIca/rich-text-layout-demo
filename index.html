@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canvas WASM Demo</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="side-panel">
+        <h2>Configuration</h2>
+        <div class="config-item">
+            <label for="inputType">Example Input</label>
+            <select id="inputType">
+                <option value="option1">Korean Text</option>
+                <option value="option2">Hebrew Text</option>
+                <option value="option3">Latin Text</option>
+                <option value="option4">Bidi Text</option>
+            </select>
+        </div>
+        <div class="config-item">
+            <label for="textSize">Text Size (<span id="textSizeStr">16</span> px)</label>
+            <input type="range" id="textSize" min="8" max="96" value="16">
+        </div>
+        <div class="config-item">
+            <label for="textColor">Text Color</label>
+            <input type="color" id="textColor" value="#000000">
+        </div>
+    </div>
+    
+    <div id="canvas-container">
+        <canvas id="canvas"></canvas>
+    </div>
+    
+    <script type="module" src="script.js"></script>
+</body>
+</html>
+

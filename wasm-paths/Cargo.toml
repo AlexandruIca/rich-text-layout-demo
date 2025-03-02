@@ -1,0 +1,16 @@
+[package]
+name = "wasm-paths"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3.77", features = ["console"] }
+rustybuzz = "0.20.1"
+icu = { version = "1.5.0" }
+icu_properties = { version = "1.5.0", features = ["bidi"] }
+unicode-bidi = "0.3.18"
