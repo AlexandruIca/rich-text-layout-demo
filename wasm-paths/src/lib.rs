@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::sync::Once;
+use std::{collections::HashMap, str::FromStr};
 
 use glam::{DAffine2, DVec2};
 use rustybuzz as hb; // alias for harfbuzz
@@ -228,23 +228,25 @@ impl<'a> AppState<'a> {
     ) -> Vec<String> {
         const PAD: f64 = 4.0;
         let line_height = 1.25 * (input_transform.size as f64);
+        let mut baseline_point = DVec2::new(
+            input_transform.x as f64 + PAD,
+            input_transform.y as f64 + PAD,
+        );
         let mut result = vec![];
 
-        for (i, (text, font, is_rtl)) in paragraphs.iter().enumerate() {
+        for (text, font, is_rtl) in paragraphs {
             let font = *font;
-            let mut baseline_point = DVec2::new(
-                input_transform.x as f64 + PAD,
-                input_transform.y as f64 + PAD + line_height * ((i + 1) as f64),
-            );
+            baseline_point.x = input_transform.x as f64 + PAD;
+            baseline_point.y += line_height;
 
             if *is_rtl {
-                baseline_point.x = ((input_transform.x + input_transform.w) as f64) - PAD;
+                baseline_point.x = ((input_transform.x + input_transform.w) as f64) - (2.0 * PAD);
             }
 
             match font {
                 Font::StaticFont(f) => {
                     let (glyphs, baseline) =
-                        self.shape_static_text(text, f, input_transform, baseline_point);
+                        self.shape_static_text(text, f, input_transform, baseline_point, *is_rtl);
                     baseline_point = baseline;
                     result.extend(glyphs);
                 }
@@ -263,51 +265,119 @@ impl<'a> AppState<'a> {
         font: &StaticFont,
         input_transform: &InputTransform,
         baseline_point: DVec2,
+        is_rtl: bool,
     ) -> (Vec<String>, DVec2) {
+        const PAD: f64 = 4.0;
+        let line_height = 1.25 * (input_transform.size as f64);
         let mut baseline_point = baseline_point;
         let mut result = vec![];
-        let mut buffer = hb::UnicodeBuffer::new();
+        use icu::segmenter::LineSegmenter;
+        let segmenter = LineSegmenter::new_auto();
 
-        buffer.push_str(text);
-        buffer.guess_segment_properties();
-        buffer.set_cluster_level(hb::BufferClusterLevel::MonotoneCharacters);
+        let mut prev_segment_index = 0;
+        let mut prev_baseline = baseline_point;
+        for segment in segmenter.segment_str(text) {
+            let pre_context = &text[0..prev_segment_index];
+            let post_context = &text[segment..];
+            let current_text = &text[prev_segment_index..segment];
 
-        if buffer.direction() == hb::Direction::TopToBottom {
-            log!("Laying out vertical text is unsupported! Detected: TopToBottom, replacing with: LeftToRight");
-            buffer.set_direction(hb::Direction::LeftToRight);
-        }
-        if buffer.direction() == hb::Direction::BottomToTop {
-            log!("Laying out vertical text is unsupported! Detected: BottomToTop, replacing with: RightToLeft");
-            buffer.set_direction(hb::Direction::RightToLeft);
-        }
+            let mut buffer = hb::UnicodeBuffer::new();
+            buffer.push_str(current_text);
+            buffer.set_pre_context(pre_context);
+            buffer.set_post_context(post_context);
+            buffer.guess_segment_properties();
+            buffer.set_cluster_level(hb::BufferClusterLevel::MonotoneCharacters);
 
-        let glyph_buffer = hb::shape(&font.face, &[], buffer);
-        for (glyph, info) in glyph_buffer
-            .glyph_positions()
-            .iter()
-            .zip(glyph_buffer.glyph_infos().iter())
-        {
-            let (advance_x, advance_y, offset_x, offset_y) = (
-                glyph.x_advance,
-                glyph.y_advance,
-                glyph.x_offset,
-                glyph.y_offset,
-            );
-            let glyph_id = hb::ttf_parser::GlyphId(info.glyph_id.try_into().unwrap());
-            let offset = DVec2::new(offset_x as f64, offset_y as f64);
-            let font_transform =
-                Self::from_font_space_to_screen_space(&font.face, input_transform.size, offset);
-            let glyph_transform = DAffine2::from_translation(baseline_point) * font_transform;
-            let mut glyph_path = GlyphPath {
-                svg_path_string: "".into(),
-                transform: glyph_transform,
-            };
-            font.face.outline_glyph(glyph_id, &mut glyph_path);
-            result.push(glyph_path.svg_path_string);
+            if buffer.direction() == hb::Direction::TopToBottom {
+                log!("Laying out vertical text is unsupported! Detected: TopToBottom, replacing with: LeftToRight");
+                buffer.set_direction(hb::Direction::LeftToRight);
+            }
+            if buffer.direction() == hb::Direction::BottomToTop {
+                log!("Laying out vertical text is unsupported! Detected: BottomToTop, replacing with: RightToLeft");
+                buffer.set_direction(hb::Direction::RightToLeft);
+            }
 
-            let advance = DVec2::new(advance_x as f64, advance_y as f64);
-            let advance = font_transform.transform_point2(advance);
-            baseline_point += advance;
+            let glyph_buffer = hb::shape(&font.face, &[], buffer);
+            for (glyph, info) in glyph_buffer
+                .glyph_positions()
+                .iter()
+                .zip(glyph_buffer.glyph_infos().iter())
+            {
+                let (advance_x, advance_y, offset_x, offset_y) = (
+                    glyph.x_advance,
+                    glyph.y_advance,
+                    glyph.x_offset,
+                    glyph.y_offset,
+                );
+                let glyph_id = hb::ttf_parser::GlyphId(info.glyph_id.try_into().unwrap());
+                let offset = DVec2::new(offset_x as f64, offset_y as f64);
+                let font_transform =
+                    Self::from_font_space_to_screen_space(&font.face, input_transform.size, offset);
+                let glyph_transform = DAffine2::from_translation(baseline_point) * font_transform;
+                let mut glyph_path = GlyphPath {
+                    svg_path_string: "".into(),
+                    transform: glyph_transform,
+                };
+                font.face.outline_glyph(glyph_id, &mut glyph_path);
+                result.push(glyph_path.svg_path_string);
+
+                let advance = DVec2::new(advance_x as f64, advance_y as f64);
+                let advance = font_transform.transform_point2(advance);
+                baseline_point += advance;
+            }
+
+            if baseline_point.x > (input_transform.w as f64 - PAD) || baseline_point.x < PAD {
+                baseline_point.y += line_height;
+                baseline_point.x = if is_rtl {
+                    ((input_transform.x + input_transform.w) as f64 - PAD)
+                        - (prev_baseline.x - baseline_point.x)
+                } else {
+                    input_transform.x as f64 + PAD + (prev_baseline.x - baseline_point.x)
+                };
+
+                let mut new_baseline = if is_rtl {
+                    DVec2::new(
+                        (input_transform.x + input_transform.w) as f64 - PAD,
+                        baseline_point.y + line_height,
+                    )
+                } else {
+                    DVec2::new(PAD, baseline_point.y + line_height)
+                };
+
+                result.pop();
+                for (glyph, info) in glyph_buffer
+                    .glyph_positions()
+                    .iter()
+                    .zip(glyph_buffer.glyph_infos().iter())
+                {
+                    let (advance_x, advance_y, offset_x, offset_y) = (
+                        glyph.x_advance,
+                        glyph.y_advance,
+                        glyph.x_offset,
+                        glyph.y_offset,
+                    );
+                    let glyph_id = hb::ttf_parser::GlyphId(info.glyph_id.try_into().unwrap());
+                    let offset = DVec2::new(offset_x as f64, offset_y as f64);
+                    let font_transform = Self::from_font_space_to_screen_space(
+                        &font.face,
+                        input_transform.size,
+                        offset,
+                    );
+                    let glyph_transform = DAffine2::from_translation(new_baseline) * font_transform;
+                    let mut glyph_path = GlyphPath {
+                        svg_path_string: "".into(),
+                        transform: glyph_transform,
+                    };
+                    font.face.outline_glyph(glyph_id, &mut glyph_path);
+                    result.push(glyph_path.svg_path_string);
+
+                    let advance = DVec2::new(advance_x as f64, advance_y as f64);
+                    let advance = font_transform.transform_point2(advance);
+                    new_baseline += advance;
+                }
+            }
+            prev_baseline = baseline_point;
+            prev_segment_index = segment;
         }
 
         (result, baseline_point)

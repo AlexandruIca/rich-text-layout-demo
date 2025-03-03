@@ -65,6 +65,8 @@ function drawPaths() {
   const input = inputForInputType(document.getElementById("inputType").value);
   const textSize = parseInt(document.getElementById("textSize").value);
   const textColor = document.getElementById("textColor").value;
+
+  const startTime = performance.now();
   const paths = get_paths(
     rect.x,
     rect.y,
@@ -73,6 +75,8 @@ function drawPaths() {
     textSize,
     input
   );
+  const endTime = performance.now();
+  console.log(`Layout took: ${endTime - startTime}ms`);
 
   document.getElementById("textSizeStr").innerText = `${textSize}`;
 
