@@ -1,6 +1,6 @@
+use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::sync::Once;
-use std::{collections::HashMap, str::FromStr};
 
 use glam::{DAffine2, DVec2};
 use rustybuzz as hb; // alias for harfbuzz
@@ -104,10 +104,36 @@ const FONT_DATA: [&'static [u8]; 5] = [
     include_bytes!("../fonts/NotoSansHebrew-VariableFont_wdth,wght.ttf"),
 ];
 
+enum HorizontalAlignment {
+    Normal,
+    Reverse,
+    Center,
+}
+
+impl Default for HorizontalAlignment {
+    fn default() -> Self {
+        HorizontalAlignment::Normal
+    }
+}
+
+enum VerticalAlignment {
+    Normal,
+    Reverse,
+    Center,
+}
+
+impl Default for VerticalAlignment {
+    fn default() -> Self {
+        VerticalAlignment::Normal
+    }
+}
+
 struct Input {
     text: String,
     spans: Vec<TextSpan>,
     paragraphs_fonts: Vec<FontId>,
+    horizontal_alignment: HorizontalAlignment,
+    vertical_alignment: VerticalAlignment,
     fallback_font: FontId,
 }
 
@@ -129,27 +155,32 @@ impl<'a> AppState<'a> {
                 face: hb::Face::from_slice(FONT_DATA[1], 0).unwrap(),
             }),
         );
-        fonts.insert(
-            "roboto".into(),
-            Font::VariableFont(VariableFont {
-                raw_data: FONT_DATA[2],
-                face: hb::Face::from_slice(FONT_DATA[2], 0).unwrap(),
-            }),
-        );
-        fonts.insert(
-            "roboto-italic".into(),
-            Font::VariableFont(VariableFont {
-                raw_data: FONT_DATA[3],
-                face: hb::Face::from_slice(FONT_DATA[3], 0).unwrap(),
-            }),
-        );
-        fonts.insert(
-            "noto".into(),
-            Font::VariableFont(VariableFont {
-                raw_data: FONT_DATA[4],
-                face: hb::Face::from_slice(FONT_DATA[4], 0).unwrap(),
-            }),
-        );
+
+        let mut roboto = VariableFont {
+            raw_data: FONT_DATA[2],
+            face: hb::Face::from_slice(FONT_DATA[2], 0).unwrap(),
+        };
+        roboto
+            .face
+            .set_variation(hb::ttf_parser::Tag::from_bytes(b"wght"), 400.0);
+        fonts.insert("roboto".into(), Font::VariableFont(roboto));
+
+        let mut roboto_italic = VariableFont {
+            raw_data: FONT_DATA[3],
+            face: hb::Face::from_slice(FONT_DATA[3], 0).unwrap(),
+        };
+        roboto_italic
+            .face
+            .set_variation(hb::ttf_parser::Tag::from_bytes(b"wght"), 400.0);
+        fonts.insert("roboto-italic".into(), Font::VariableFont(roboto_italic));
+
+        let mut noto = VariableFont {
+            raw_data: FONT_DATA[4],
+            face: hb::Face::from_slice(FONT_DATA[4], 0).unwrap(),
+        };
+        noto.face
+            .set_variation(hb::ttf_parser::Tag::from_bytes(b"wght"), 400.0);
+        fonts.insert("noto".into(), Font::VariableFont(noto));
 
         let inputs = vec![
             Input {
@@ -157,24 +188,32 @@ impl<'a> AppState<'a> {
                 spans: vec![],
                 paragraphs_fonts: vec!["seoul".into()],
                 fallback_font: "seoul".into(),
+                horizontal_alignment: HorizontalAlignment::Normal,
+                vertical_alignment: VerticalAlignment::Normal,
             },
             Input {
                 text: "איש לא יהיה נתון למעצר, מעצר שרירותי או גירוש. לכל אדם הזכות לשוויון מלא למשפט הוגן ופומבי בפני בית דין עצמאי ובלתי משוחד, לצורך הכרעה בזכויותיו וחובותיו ובכל אישום פלילי המופנה נגדו. איש לא יהיה נתון להתערבות שרירותית בפרטיותו, במשפחתו, בביתו או בהתכתבויותיו, ולא לפגיעות בכבודו או בשמו הטוב. לכל אדם הזכות להגנת החוק מפני התערבויות או פגיעות כאלה.".into(),
                 spans: vec![],
                 paragraphs_fonts: vec!["noto".into()],
                 fallback_font: "noto".into(),
+                horizontal_alignment: HorizontalAlignment::Normal,
+                vertical_alignment: VerticalAlignment::Normal,
             },
             Input {
                 text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires. Toute personne a droit, en pleine égalité, à ce que sa cause soit entendue équitablement et publiquement par un tribunal indépendant et impartial, qui décidera de ses droits et obligations ainsi que du bien-fondé de toute accusation en matière pénale portée contre elle. Nul ne sera l'objet d'immixtions arbitraires dans sa vie privée, sa famille, son domicile ou sa correspondance, ni d'atteintes à son honneur et à sa réputation. Toute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.".into(),
                 spans: vec![],
                 paragraphs_fonts: vec!["pt".into()],
                 fallback_font: "pt".into(),
+                horizontal_alignment: HorizontalAlignment::Normal,
+                vertical_alignment: VerticalAlignment::Normal,
             },
             Input {
                 text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires. \n איש לא יהיה נתון להתערבות שרירותית בפרטיותו, במשפחתו, בביתו או בהתכתבויותיו, ולא לפגיעות בכבודו או בשמו הטוב \n Toute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.".into(),
                 spans: vec![],
                 paragraphs_fonts: vec!["roboto".into(), "noto".into(), "roboto".into()],
                 fallback_font: "roboto".into(),
+                horizontal_alignment: HorizontalAlignment::Normal,
+                vertical_alignment: VerticalAlignment::Normal,
             }
         ];
 
@@ -195,7 +234,11 @@ impl<'a> AppState<'a> {
 
         for (i, paragraph) in bidi_info.paragraphs.iter().enumerate() {
             let line = paragraph.range.clone();
-            let display_str: String = bidi_info.reorder_line(paragraph, line).into_owned();
+            let display_str: String = if bidi_info.paragraphs.len() > 1 {
+                bidi_info.reorder_line(paragraph, line).into_owned()
+            } else {
+                self.inputs[input].text.clone()
+            };
             let is_rtl = paragraph.level.is_rtl();
 
             let mut font = self.fonts.get(&self.inputs[input].paragraphs_fonts[i]);
@@ -226,7 +269,7 @@ impl<'a> AppState<'a> {
         input_transform: &InputTransform,
         paragraphs: &[(String, &Font, bool)],
     ) -> Vec<String> {
-        const PAD: f64 = 4.0;
+        const PAD: f64 = 24.0;
         let line_height = 1.25 * (input_transform.size as f64);
         let mut baseline_point = DVec2::new(
             input_transform.x as f64 + PAD,
@@ -240,14 +283,15 @@ impl<'a> AppState<'a> {
             baseline_point.y += line_height;
 
             if *is_rtl {
-                baseline_point.x = ((input_transform.x + input_transform.w) as f64) - (2.0 * PAD);
+                //baseline_point.x = ((input_transform.x + input_transform.w) as f64) - (2.0 * PAD);
+                baseline_point.x = (input_transform.x as f64) + PAD;
             }
 
-            match font {
+            match &font {
                 Font::StaticFont(f) => {
                     let (glyphs, baseline) = self.shape_static_text(
                         text,
-                        f,
+                        &f.face,
                         input_transform,
                         baseline_point,
                         *is_rtl,
@@ -257,8 +301,18 @@ impl<'a> AppState<'a> {
                     baseline_point = baseline;
                     result.extend(glyphs);
                 }
-                Font::VariableFont(_f) => {
-                    log!("Can't currently draw variable fonts!");
+                Font::VariableFont(f) => {
+                    let (glyphs, baseline) = self.shape_static_text(
+                        text,
+                        &f.face,
+                        input_transform,
+                        baseline_point,
+                        *is_rtl,
+                        PAD,
+                        line_height,
+                    );
+                    baseline_point = baseline;
+                    result.extend(glyphs);
                 }
             }
         }
@@ -269,7 +323,7 @@ impl<'a> AppState<'a> {
     fn shape_static_text(
         &self,
         text: &str,
-        font: &StaticFont,
+        face: &hb::Face,
         input_transform: &InputTransform,
         baseline_point: DVec2,
         is_rtl: bool,
@@ -288,49 +342,50 @@ impl<'a> AppState<'a> {
             let current_text = &text[prev_segment_index..segment];
 
             let mut buffer = hb::UnicodeBuffer::new();
-            buffer.push_str(current_text);
             buffer.set_pre_context(pre_context);
+            buffer.push_str(current_text);
             buffer.set_post_context(post_context);
             buffer.guess_segment_properties();
-            buffer.set_cluster_level(hb::BufferClusterLevel::MonotoneCharacters);
-
-            if buffer.direction() == hb::Direction::TopToBottom {
-                log!("Laying out vertical text is unsupported! Detected: TopToBottom, replacing with: LeftToRight");
+            if is_rtl {
+                buffer.set_direction(hb::Direction::RightToLeft);
+            } else {
                 buffer.set_direction(hb::Direction::LeftToRight);
             }
-            if buffer.direction() == hb::Direction::BottomToTop {
-                log!("Laying out vertical text is unsupported! Detected: BottomToTop, replacing with: RightToLeft");
-                buffer.set_direction(hb::Direction::RightToLeft);
-            }
+            buffer.set_cluster_level(hb::BufferClusterLevel::MonotoneCharacters);
 
-            let glyph_buffer = hb::shape(&font.face, &[], buffer);
+            let glyph_buffer = hb::shape(face, &[], buffer);
             let (shaped_glyphs, new_baseline) =
-                Self::perform_shaping(&glyph_buffer, &font.face, baseline_point, input_transform);
+                Self::perform_shaping(&glyph_buffer, face, baseline_point, input_transform, is_rtl);
 
             if (new_baseline.x > ((input_transform.x + input_transform.w) as f64 - pad)
                 || new_baseline.x < (input_transform.x as f64 + pad))
-                && prev_segment_index != 0
+                && prev_segment_index != 0 // prevent first non-fitting word being placed on a new line and ending up with the first line as empty
                 && segment != 0
             {
                 baseline_point.y += line_height;
-                baseline_point.x = if is_rtl {
+                baseline_point.x = /*if is_rtl {
                     ((input_transform.x + input_transform.w) as f64 - pad)
                         - (baseline_point.x - new_baseline.x).abs()
-                } else {
-                    input_transform.x as f64 + pad + (new_baseline.x - baseline_point.x).abs()
-                };
+                } else {*/
+                    input_transform.x as f64 + pad + (new_baseline.x - baseline_point.x).abs();
+                //};
 
-                let new_baseline = if is_rtl {
+                let new_baseline = /*if is_rtl {
                     DVec2::new(
                         (input_transform.x + input_transform.w) as f64 - pad,
                         baseline_point.y,
                     )
-                } else {
+                } else {*/
                     DVec2::new(input_transform.x as f64 + pad, baseline_point.y)
-                };
+                /*}*/;
 
-                let (shaped_glyphs, _) =
-                    Self::perform_shaping(&glyph_buffer, &font.face, new_baseline, input_transform);
+                let (shaped_glyphs, _) = Self::perform_shaping(
+                    &glyph_buffer,
+                    face,
+                    new_baseline,
+                    input_transform,
+                    is_rtl,
+                );
                 result.extend(shaped_glyphs);
             } else {
                 baseline_point = new_baseline;
@@ -348,9 +403,11 @@ impl<'a> AppState<'a> {
         face: &hb::Face,
         baseline: DVec2,
         input_transform: &InputTransform,
+        is_rtl: bool,
     ) -> (Vec<String>, DVec2) {
         let mut result = vec![];
         let mut new_baseline = baseline;
+        let x_dir = 1.0; //if is_rtl { -1.0 } else { 1.0 };
         for (glyph, info) in glyph_buffer
             .glyph_positions()
             .iter()
@@ -363,6 +420,7 @@ impl<'a> AppState<'a> {
                 glyph.y_offset,
             );
             let glyph_id = hb::ttf_parser::GlyphId(info.glyph_id.try_into().unwrap());
+
             let offset = DVec2::new(offset_x as f64, offset_y as f64);
             let font_transform =
                 Self::from_font_space_to_screen_space(&face, input_transform.size, offset);
@@ -371,10 +429,11 @@ impl<'a> AppState<'a> {
                 svg_path_string: "".into(),
                 transform: glyph_transform,
             };
+
             face.outline_glyph(glyph_id, &mut glyph_path);
             result.push(glyph_path.svg_path_string);
 
-            let advance = DVec2::new(advance_x as f64, advance_y as f64);
+            let advance = DVec2::new(advance_x as f64 * x_dir, advance_y as f64);
             let advance = font_transform.transform_point2(advance);
             new_baseline += advance;
         }
