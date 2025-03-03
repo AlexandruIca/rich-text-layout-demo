@@ -245,8 +245,15 @@ impl<'a> AppState<'a> {
 
             match font {
                 Font::StaticFont(f) => {
-                    let (glyphs, baseline) =
-                        self.shape_static_text(text, f, input_transform, baseline_point, *is_rtl);
+                    let (glyphs, baseline) = self.shape_static_text(
+                        text,
+                        f,
+                        input_transform,
+                        baseline_point,
+                        *is_rtl,
+                        PAD,
+                        line_height,
+                    );
                     baseline_point = baseline;
                     result.extend(glyphs);
                 }
@@ -266,16 +273,15 @@ impl<'a> AppState<'a> {
         input_transform: &InputTransform,
         baseline_point: DVec2,
         is_rtl: bool,
+        pad: f64,
+        line_height: f64,
     ) -> (Vec<String>, DVec2) {
-        const PAD: f64 = 4.0;
-        let line_height = 1.25 * (input_transform.size as f64);
         let mut baseline_point = baseline_point;
         let mut result = vec![];
         use icu::segmenter::LineSegmenter;
         let segmenter = LineSegmenter::new_auto();
 
         let mut prev_segment_index = 0;
-        let mut prev_baseline = baseline_point;
         for segment in segmenter.segment_str(text) {
             let pre_context = &text[0..prev_segment_index];
             let post_context = &text[segment..];
@@ -298,89 +304,81 @@ impl<'a> AppState<'a> {
             }
 
             let glyph_buffer = hb::shape(&font.face, &[], buffer);
-            for (glyph, info) in glyph_buffer
-                .glyph_positions()
-                .iter()
-                .zip(glyph_buffer.glyph_infos().iter())
+            let (shaped_glyphs, new_baseline) =
+                Self::perform_shaping(&glyph_buffer, &font.face, baseline_point, input_transform);
+
+            if (new_baseline.x > ((input_transform.x + input_transform.w) as f64 - pad)
+                || new_baseline.x < (input_transform.x as f64 + pad))
+                && prev_segment_index != 0
+                && segment != 0
             {
-                let (advance_x, advance_y, offset_x, offset_y) = (
-                    glyph.x_advance,
-                    glyph.y_advance,
-                    glyph.x_offset,
-                    glyph.y_offset,
-                );
-                let glyph_id = hb::ttf_parser::GlyphId(info.glyph_id.try_into().unwrap());
-                let offset = DVec2::new(offset_x as f64, offset_y as f64);
-                let font_transform =
-                    Self::from_font_space_to_screen_space(&font.face, input_transform.size, offset);
-                let glyph_transform = DAffine2::from_translation(baseline_point) * font_transform;
-                let mut glyph_path = GlyphPath {
-                    svg_path_string: "".into(),
-                    transform: glyph_transform,
-                };
-                font.face.outline_glyph(glyph_id, &mut glyph_path);
-                result.push(glyph_path.svg_path_string);
-
-                let advance = DVec2::new(advance_x as f64, advance_y as f64);
-                let advance = font_transform.transform_point2(advance);
-                baseline_point += advance;
-            }
-
-            if baseline_point.x > (input_transform.w as f64 - PAD) || baseline_point.x < PAD {
                 baseline_point.y += line_height;
                 baseline_point.x = if is_rtl {
-                    ((input_transform.x + input_transform.w) as f64 - PAD)
-                        - (prev_baseline.x - baseline_point.x)
+                    ((input_transform.x + input_transform.w) as f64 - pad)
+                        - (baseline_point.x - new_baseline.x).abs()
                 } else {
-                    input_transform.x as f64 + PAD + (prev_baseline.x - baseline_point.x)
+                    input_transform.x as f64 + pad + (new_baseline.x - baseline_point.x).abs()
                 };
 
-                let mut new_baseline = if is_rtl {
+                let new_baseline = if is_rtl {
                     DVec2::new(
-                        (input_transform.x + input_transform.w) as f64 - PAD,
-                        baseline_point.y + line_height,
+                        (input_transform.x + input_transform.w) as f64 - pad,
+                        baseline_point.y,
                     )
                 } else {
-                    DVec2::new(PAD, baseline_point.y + line_height)
+                    DVec2::new(input_transform.x as f64 + pad, baseline_point.y)
                 };
 
-                result.pop();
-                for (glyph, info) in glyph_buffer
-                    .glyph_positions()
-                    .iter()
-                    .zip(glyph_buffer.glyph_infos().iter())
-                {
-                    let (advance_x, advance_y, offset_x, offset_y) = (
-                        glyph.x_advance,
-                        glyph.y_advance,
-                        glyph.x_offset,
-                        glyph.y_offset,
-                    );
-                    let glyph_id = hb::ttf_parser::GlyphId(info.glyph_id.try_into().unwrap());
-                    let offset = DVec2::new(offset_x as f64, offset_y as f64);
-                    let font_transform = Self::from_font_space_to_screen_space(
-                        &font.face,
-                        input_transform.size,
-                        offset,
-                    );
-                    let glyph_transform = DAffine2::from_translation(new_baseline) * font_transform;
-                    let mut glyph_path = GlyphPath {
-                        svg_path_string: "".into(),
-                        transform: glyph_transform,
-                    };
-                    font.face.outline_glyph(glyph_id, &mut glyph_path);
-                    result.push(glyph_path.svg_path_string);
-
-                    let advance = DVec2::new(advance_x as f64, advance_y as f64);
-                    let advance = font_transform.transform_point2(advance);
-                    new_baseline += advance;
-                }
+                let (shaped_glyphs, _) =
+                    Self::perform_shaping(&glyph_buffer, &font.face, new_baseline, input_transform);
+                result.extend(shaped_glyphs);
+            } else {
+                baseline_point = new_baseline;
+                result.extend(shaped_glyphs);
             }
-            prev_baseline = baseline_point;
+
             prev_segment_index = segment;
         }
 
         (result, baseline_point)
+    }
+
+    fn perform_shaping(
+        glyph_buffer: &hb::GlyphBuffer,
+        face: &hb::Face,
+        baseline: DVec2,
+        input_transform: &InputTransform,
+    ) -> (Vec<String>, DVec2) {
+        let mut result = vec![];
+        let mut new_baseline = baseline;
+        for (glyph, info) in glyph_buffer
+            .glyph_positions()
+            .iter()
+            .zip(glyph_buffer.glyph_infos().iter())
+        {
+            let (advance_x, advance_y, offset_x, offset_y) = (
+                glyph.x_advance,
+                glyph.y_advance,
+                glyph.x_offset,
+                glyph.y_offset,
+            );
+            let glyph_id = hb::ttf_parser::GlyphId(info.glyph_id.try_into().unwrap());
+            let offset = DVec2::new(offset_x as f64, offset_y as f64);
+            let font_transform =
+                Self::from_font_space_to_screen_space(&face, input_transform.size, offset);
+            let glyph_transform = DAffine2::from_translation(new_baseline) * font_transform;
+            let mut glyph_path = GlyphPath {
+                svg_path_string: "".into(),
+                transform: glyph_transform,
+            };
+            face.outline_glyph(glyph_id, &mut glyph_path);
+            result.push(glyph_path.svg_path_string);
+
+            let advance = DVec2::new(advance_x as f64, advance_y as f64);
+            let advance = font_transform.transform_point2(advance);
+            new_baseline += advance;
+        }
+        (result, new_baseline)
     }
 
     fn from_font_space_to_screen_space(
