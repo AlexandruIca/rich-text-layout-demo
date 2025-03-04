@@ -52,27 +52,7 @@ impl<'a> Font<'a> {}
 type FontId = String;
 type FontRegistry<'a> = HashMap<FontId, Font<'a>>;
 
-const FONT_WEIGHTS: [&'static str; 6] = [
-    "light",
-    "light-italic",
-    "normal",
-    "normal-italic",
-    "bold",
-    "bold-italic",
-];
-
 const GLOBAL_FALLBACK_FONT: &'static str = "pt";
-
-#[derive(Debug, Clone, Copy)]
-#[repr(u8)]
-enum FontWeight {
-    Light,
-    LightItalic,
-    Normal,
-    NormalItalic,
-    Bold,
-    BoldItalic,
-}
 
 const FONT_DATA: [&'static [u8]; 5] = [
     include_bytes!("../fonts/PTSerif-Regular.ttf"),
@@ -249,32 +229,82 @@ impl<'a> AppState<'a> {
     ) -> Vec<String> {
         const PAD: f64 = 12.0;
         let line_height = 1.25 * (input_transform.size as f64);
-        let mut baseline_point = DVec2::new(
-            input_transform.x as f64 + PAD,
-            input_transform.y as f64 + PAD,
-        );
         let mut result = vec![];
+        let mut current_height = (input_transform.y as f64) + PAD + line_height;
+        let mut glyphs_per_paragraph =
+            Vec::<(Vec<ShapedFragment>, bool)>::with_capacity(paragraphs.len());
 
         for (text, font, is_rtl) in paragraphs {
-            let font = *font;
-            baseline_point.x = input_transform.x as f64 + PAD;
-            baseline_point.y += line_height;
+            let glyphs = self.shape_static_text(text, &font.face, input_transform, *is_rtl);
+            glyphs_per_paragraph.push((glyphs, *is_rtl));
+        }
 
-            if *is_rtl {
-                baseline_point.x = (input_transform.x + input_transform.w) as f64 - PAD;
+        for (_i, (glyphs, is_rtl)) in glyphs_per_paragraph.iter_mut().enumerate() {
+            let mut baseline = if *is_rtl {
+                DVec2::new(
+                    ((input_transform.x + input_transform.w) as f64) - PAD,
+                    current_height,
+                )
+            } else {
+                DVec2::new((input_transform.x as f64) + PAD, current_height)
+            };
+
+            let mut lines = vec![0.0_f64];
+            let max_line_length = (input_transform.w as f64 - 2.0 * PAD).max(0.0);
+            let mut current_line_length = 0.0;
+
+            for (j, fragment) in glyphs.iter_mut().enumerate() {
+                current_line_length += fragment.length;
+
+                if current_line_length > max_line_length {
+                    current_line_length = fragment.length;
+                    lines.push(current_line_length);
+                    if j > 0 {
+                        current_height += line_height;
+                    }
+
+                    let new_baseline_x = if *is_rtl {
+                        ((input_transform.x + input_transform.w) as f64) - PAD - fragment.length
+                    } else {
+                        (input_transform.x as f64) + PAD
+                    };
+
+                    let offset = DVec2::new(new_baseline_x, current_height);
+                    for glyph in fragment.glyphs.iter_mut() {
+                        glyph.translate(offset);
+                        result.push(glyph.svg_path_string.clone());
+                    }
+
+                    baseline.x = if *is_rtl {
+                        new_baseline_x
+                    } else {
+                        new_baseline_x + fragment.length
+                    };
+                    baseline.y = current_height;
+                } else {
+                    *lines.last_mut().unwrap() += fragment.length;
+
+                    let new_baseline_x = if *is_rtl {
+                        baseline.x - fragment.length
+                    } else {
+                        baseline.x
+                    };
+
+                    let offset = DVec2::new(new_baseline_x, current_height);
+                    for glyph in fragment.glyphs.iter_mut() {
+                        glyph.translate(offset);
+                        result.push(glyph.svg_path_string.clone());
+                    }
+
+                    baseline.x = if *is_rtl {
+                        new_baseline_x
+                    } else {
+                        new_baseline_x + fragment.length
+                    };
+                }
             }
 
-            let (glyphs, baseline) = self.shape_static_text(
-                text,
-                &font.face,
-                input_transform,
-                baseline_point,
-                *is_rtl,
-                PAD,
-                line_height,
-            );
-            baseline_point = baseline;
-            result.extend(glyphs);
+            current_height += line_height;
         }
 
         result
@@ -285,12 +315,8 @@ impl<'a> AppState<'a> {
         text: &str,
         face: &hb::Face,
         input_transform: &InputTransform,
-        baseline_point: DVec2,
         is_rtl: bool,
-        pad: f64,
-        line_height: f64,
-    ) -> (Vec<String>, DVec2) {
-        let mut baseline_point = baseline_point;
+    ) -> Vec<ShapedFragment> {
         let mut result = vec![];
         use icu::segmenter::LineSegmenter;
         let segmenter = LineSegmenter::new_auto();
@@ -298,8 +324,8 @@ impl<'a> AppState<'a> {
         let mut prev_segment_index = 0;
         for segment in segmenter.segment_str(text) {
             let pre_context = &text[0..prev_segment_index];
-            let post_context = &text[segment..];
             let current_text = &text[prev_segment_index..segment];
+            let post_context = &text[segment..];
 
             let mut buffer = hb::UnicodeBuffer::new();
             buffer.set_pre_context(pre_context);
@@ -314,101 +340,47 @@ impl<'a> AppState<'a> {
             buffer.set_cluster_level(hb::BufferClusterLevel::MonotoneCharacters);
 
             let glyph_buffer = hb::shape(face, &[], buffer);
-            let (shaped_glyphs, new_baseline) =
-                Self::perform_shaping(&glyph_buffer, face, baseline_point, input_transform, is_rtl);
-            let mut shaped_fragment = ShapedFragment::new(shaped_glyphs);
-            let actual_baseline_x = if is_rtl {
-                baseline_point.x - shaped_fragment.length
-            } else {
-                new_baseline.x
-            };
+            let shaped_glyphs = Self::perform_shaping(&glyph_buffer, face, input_transform);
+            let shaped_fragment = ShapedFragment::new(shaped_glyphs);
 
-            if (actual_baseline_x > ((input_transform.x + input_transform.w) as f64 - pad)
-                || actual_baseline_x < (input_transform.x as f64 + pad))
-                && prev_segment_index != 0 // prevent first non-fitting word being placed on a new line and ending up with the first line as empty
-                && segment != 0
-            {
-                baseline_point.y += line_height;
-
-                let new_baseline = if is_rtl {
-                    DVec2::new(
-                        (input_transform.x + input_transform.w) as f64
-                            - pad
-                            - shaped_fragment.length,
-                        baseline_point.y,
-                    )
-                } else {
-                    DVec2::new(input_transform.x as f64 + pad, baseline_point.y)
-                };
-
-                for fragment in shaped_fragment.glyphs.iter_mut() {
-                    let offset_x = if is_rtl {
-                        -baseline_point.x + new_baseline.x
-                    } else {
-                        -baseline_point.x + new_baseline.x
-                    };
-                    fragment.translate(DVec2::new(offset_x, line_height));
-                    result.push(fragment.svg_path_string.clone());
-                }
-
-                if is_rtl {
-                    baseline_point.x = (input_transform.x + input_transform.w) as f64
-                        - pad
-                        - shaped_fragment.length;
-                } else {
-                    baseline_point.x = input_transform.x as f64 + pad + shaped_fragment.length;
-                }
-            } else {
-                if is_rtl {
-                    for fragment in shaped_fragment.glyphs.iter_mut() {
-                        let offset_x = -shaped_fragment.length;
-                        fragment.translate(DVec2::new(offset_x, 0.0));
-                        result.push(fragment.svg_path_string.clone());
-                    }
-                    baseline_point =
-                        DVec2::new(baseline_point.x - shaped_fragment.length, new_baseline.y);
-                } else {
-                    baseline_point = new_baseline;
-                }
-                for fragment in shaped_fragment.glyphs.iter() {
-                    result.push(fragment.svg_path_string.clone());
-                }
+            // Don't keep empty segments. They are an often occurence because a line break can always
+            // be inserted before the first letter of a paragraph.
+            if !current_text.is_empty() {
+                result.push(shaped_fragment);
             }
-
             prev_segment_index = segment;
         }
 
-        (result, baseline_point)
+        result
     }
 
     fn perform_shaping(
         glyph_buffer: &hb::GlyphBuffer,
         face: &hb::Face,
-        baseline: DVec2,
         input_transform: &InputTransform,
-        is_rtl: bool,
-    ) -> (Vec<GlyphPath>, DVec2) {
+    ) -> Vec<GlyphPath> {
         let mut result = vec![];
-        let mut new_baseline = baseline;
-        let x_dir = 1.0;
+        let mut baseline = DVec2::new(0.0, 0.0);
+
         for (glyph, info) in glyph_buffer
             .glyph_positions()
             .iter()
             .zip(glyph_buffer.glyph_infos().iter())
         {
+            let glyph_id = hb::ttf_parser::GlyphId(info.glyph_id.try_into().unwrap());
+            let font_transform = Self::from_font_space_to_screen_space(&face, input_transform.size);
+
             let (advance_x, advance_y, offset_x, offset_y) = (
                 glyph.x_advance,
                 glyph.y_advance,
                 glyph.x_offset,
                 glyph.y_offset,
             );
-            let font_transform = Self::from_font_space_to_screen_space(&face, input_transform.size);
-            let advance = DVec2::new(advance_x as f64 * x_dir, advance_y as f64);
+            let advance = DVec2::new(advance_x as f64, advance_y as f64);
             let advance = font_transform.transform_point2(advance);
-            let glyph_id = hb::ttf_parser::GlyphId(info.glyph_id.try_into().unwrap());
 
             let offset = DVec2::new(offset_x as f64, offset_y as f64);
-            let glyph_transform = DAffine2::from_translation(new_baseline)
+            let glyph_transform = DAffine2::from_translation(baseline)
                 * font_transform
                 * DAffine2::from_translation(offset);
             let mut glyph_path = GlyphPath {
@@ -418,11 +390,12 @@ impl<'a> AppState<'a> {
                 advance_x: advance.x,
             };
             face.outline_glyph(glyph_id, &mut glyph_path);
-            result.push(glyph_path);
 
-            new_baseline += advance;
+            result.push(glyph_path);
+            baseline += advance;
         }
-        (result, new_baseline)
+
+        result
     }
 
     fn from_font_space_to_screen_space(face: &hb::Face, text_size: usize) -> DAffine2 {
