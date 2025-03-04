@@ -8,8 +8,15 @@ use wasm_bindgen::prelude::*;
 
 macro_rules! log {
     ($($arg:tt)*) => ({
-        let msg = format!($($arg)*);
-        web_sys::console::log_1(&msg.into());
+        #[cfg(target_arch = "wasm32")]
+        {
+            let msg = format!($($arg)*);
+            web_sys::console::log_1(&msg.into());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            println!($($arg)*);
+        }
     });
 }
 
@@ -200,15 +207,15 @@ impl<'a> AppState<'a> {
                 vertical_alignment: VerticalAlignment::Normal,
             },
             Input {
-                text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires. Toute personne a droit, en pleine égalité, à ce que sa cause soit entendue équitablement et publiquement par un tribunal indépendant et impartial, qui décidera de ses droits et obligations ainsi que du bien-fondé de toute accusation en matière pénale portée contre elle. Nul ne sera l'objet d'immixtions arbitraires dans sa vie privée, sa famille, son domicile ou sa correspondance, ni d'atteintes à son honneur et à sa réputation. Toute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.".into(),
+                text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires.\n\n Toute personne a droit, en pleine égalité, à ce que sa cause soit entendue équitablement et publiquement par un tribunal indépendant et impartial, qui décidera de ses droits et obligations ainsi que du bien-fondé de toute accusation en matière pénale portée contre elle. Nul ne sera l'objet d'immixtions arbitraires dans sa vie privée, sa famille, son domicile ou sa correspondance, ni d'atteintes à son honneur et à sa réputation. Toute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.".into(),
                 spans: vec![],
-                paragraphs_fonts: vec!["pt".into()],
+                paragraphs_fonts: vec!["pt".into(), "pt".into(), "pt".into()],
                 fallback_font: "pt".into(),
                 horizontal_alignment: HorizontalAlignment::Normal,
                 vertical_alignment: VerticalAlignment::Normal,
             },
             Input {
-                text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires. \n איש לא יהיה נתון להתערבות שרירותית בפרטיותו, במשפחתו, בביתו או בהתכתבויותיו, ולא לפגיעות בכבודו או בשמו הטוב \n Toute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.".into(),
+                text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires. \n איש לא יהיה נתון להתערבות שרירותית בפרטיותו, במשפחתו, בביתו או בהתכתבויותיו, ולא לפגיעות בכבודו או בשמו הטוב \nToute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.".into(),
                 spans: vec![],
                 paragraphs_fonts: vec!["roboto".into(), "noto".into(), "roboto".into()],
                 fallback_font: "roboto".into(),
@@ -234,11 +241,8 @@ impl<'a> AppState<'a> {
 
         for (i, paragraph) in bidi_info.paragraphs.iter().enumerate() {
             let line = paragraph.range.clone();
-            let display_str: String = if bidi_info.paragraphs.len() > 1 {
-                bidi_info.reorder_line(paragraph, line).into_owned()
-            } else {
-                self.inputs[input].text.clone()
-            };
+            let display_str: String =
+                String::from(&self.inputs[input].text[line.start..line.end - 1]);
             let is_rtl = paragraph.level.is_rtl();
 
             let mut font = self.fonts.get(&self.inputs[input].paragraphs_fonts[i]);
@@ -269,7 +273,7 @@ impl<'a> AppState<'a> {
         input_transform: &InputTransform,
         paragraphs: &[(String, &Font, bool)],
     ) -> Vec<String> {
-        const PAD: f64 = 24.0;
+        const PAD: f64 = 12.0;
         let line_height = 1.25 * (input_transform.size as f64);
         let mut baseline_point = DVec2::new(
             input_transform.x as f64 + PAD,
@@ -283,7 +287,6 @@ impl<'a> AppState<'a> {
             baseline_point.y += line_height;
 
             if *is_rtl {
-                //baseline_point.x = ((input_transform.x + input_transform.w) as f64) - (2.0 * PAD);
                 baseline_point.x = (input_transform.x as f64) + PAD;
             }
 
@@ -363,21 +366,10 @@ impl<'a> AppState<'a> {
                 && segment != 0
             {
                 baseline_point.y += line_height;
-                baseline_point.x = /*if is_rtl {
-                    ((input_transform.x + input_transform.w) as f64 - pad)
-                        - (baseline_point.x - new_baseline.x).abs()
-                } else {*/
+                baseline_point.x =
                     input_transform.x as f64 + pad + (new_baseline.x - baseline_point.x).abs();
-                //};
 
-                let new_baseline = /*if is_rtl {
-                    DVec2::new(
-                        (input_transform.x + input_transform.w) as f64 - pad,
-                        baseline_point.y,
-                    )
-                } else {*/
-                    DVec2::new(input_transform.x as f64 + pad, baseline_point.y)
-                /*}*/;
+                let new_baseline = DVec2::new(input_transform.x as f64 + pad, baseline_point.y);
 
                 let (shaped_glyphs, _) = Self::perform_shaping(
                     &glyph_buffer,
