@@ -261,7 +261,7 @@ impl<'a> AppState<'a> {
             baseline_point.y += line_height;
 
             if *is_rtl {
-                baseline_point.x = (input_transform.x as f64) + PAD;
+                baseline_point.x = (input_transform.x + input_transform.w) as f64 - PAD;
             }
 
             let (glyphs, baseline) = self.shape_static_text(
@@ -317,24 +317,59 @@ impl<'a> AppState<'a> {
             let (shaped_glyphs, new_baseline) =
                 Self::perform_shaping(&glyph_buffer, face, baseline_point, input_transform, is_rtl);
             let mut shaped_fragment = ShapedFragment::new(shaped_glyphs);
+            let actual_baseline_x = if is_rtl {
+                baseline_point.x - shaped_fragment.length
+            } else {
+                new_baseline.x
+            };
 
-            if (new_baseline.x > ((input_transform.x + input_transform.w) as f64 - pad)
-                || new_baseline.x < (input_transform.x as f64 + pad))
+            if (actual_baseline_x > ((input_transform.x + input_transform.w) as f64 - pad)
+                || actual_baseline_x < (input_transform.x as f64 + pad))
                 && prev_segment_index != 0 // prevent first non-fitting word being placed on a new line and ending up with the first line as empty
                 && segment != 0
             {
                 baseline_point.y += line_height;
 
-                let new_baseline = DVec2::new(input_transform.x as f64 + pad, baseline_point.y);
+                let new_baseline = if is_rtl {
+                    DVec2::new(
+                        (input_transform.x + input_transform.w) as f64
+                            - pad
+                            - shaped_fragment.length,
+                        baseline_point.y,
+                    )
+                } else {
+                    DVec2::new(input_transform.x as f64 + pad, baseline_point.y)
+                };
 
                 for fragment in shaped_fragment.glyphs.iter_mut() {
-                    fragment.translate(DVec2::new(-baseline_point.x + new_baseline.x, line_height));
+                    let offset_x = if is_rtl {
+                        -baseline_point.x + new_baseline.x
+                    } else {
+                        -baseline_point.x + new_baseline.x
+                    };
+                    fragment.translate(DVec2::new(offset_x, line_height));
                     result.push(fragment.svg_path_string.clone());
                 }
 
-                baseline_point.x = input_transform.x as f64 + pad + shaped_fragment.length;
+                if is_rtl {
+                    baseline_point.x = (input_transform.x + input_transform.w) as f64
+                        - pad
+                        - shaped_fragment.length;
+                } else {
+                    baseline_point.x = input_transform.x as f64 + pad + shaped_fragment.length;
+                }
             } else {
-                baseline_point = new_baseline;
+                if is_rtl {
+                    for fragment in shaped_fragment.glyphs.iter_mut() {
+                        let offset_x = -shaped_fragment.length;
+                        fragment.translate(DVec2::new(offset_x, 0.0));
+                        result.push(fragment.svg_path_string.clone());
+                    }
+                    baseline_point =
+                        DVec2::new(baseline_point.x - shaped_fragment.length, new_baseline.y);
+                } else {
+                    baseline_point = new_baseline;
+                }
                 for fragment in shaped_fragment.glyphs.iter() {
                     result.push(fragment.svg_path_string.clone());
                 }
