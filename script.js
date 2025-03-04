@@ -7,8 +7,8 @@ let wasmInitialized = false;
 let rect = {
   x: 100,
   y: 100,
-  width: 300,
-  height: 200,
+  width: 600,
+  height: 400,
 };
 const edgeThreshold = 8;
 

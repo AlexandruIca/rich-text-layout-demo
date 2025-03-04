@@ -42,19 +42,9 @@ pub fn get_paths(x: i32, y: i32, w: i32, h: i32, size: usize, input: usize) -> V
     state.resolve_input(&input_transform, input)
 }
 
-struct StaticFont<'a> {
+struct Font<'a> {
     raw_data: &'a [u8],
     face: hb::Face<'a>,
-}
-
-struct VariableFont<'a> {
-    raw_data: &'a [u8],
-    face: hb::Face<'a>,
-}
-
-enum Font<'a> {
-    StaticFont(StaticFont<'a>),
-    VariableFont(VariableFont<'a>),
 }
 
 impl<'a> Font<'a> {}
@@ -82,25 +72,6 @@ enum FontWeight {
     NormalItalic,
     Bold,
     BoldItalic,
-}
-
-struct FontStyle {
-    size_scale: f32,
-    color: u32,
-    weight: FontWeight,
-    underline: bool,
-    strikethrough: bool,
-}
-
-struct TextSpanStyle {
-    font_id: FontId,
-    font_style: FontStyle,
-}
-
-struct TextSpan {
-    start_index: usize,
-    end_index: usize,
-    style: TextSpanStyle,
 }
 
 const FONT_DATA: [&'static [u8]; 5] = [
@@ -137,7 +108,6 @@ impl Default for VerticalAlignment {
 
 struct Input {
     text: String,
-    spans: Vec<TextSpan>,
     paragraphs_fonts: Vec<FontId>,
     horizontal_alignment: HorizontalAlignment,
     vertical_alignment: VerticalAlignment,
@@ -150,49 +120,48 @@ impl<'a> AppState<'a> {
 
         fonts.insert(
             GLOBAL_FALLBACK_FONT.into(),
-            Font::StaticFont(StaticFont {
+            Font {
                 raw_data: FONT_DATA[0],
                 face: hb::Face::from_slice(FONT_DATA[0], 0).unwrap(),
-            }),
+            },
         );
         fonts.insert(
             "seoul".into(),
-            Font::StaticFont(StaticFont {
+            Font {
                 raw_data: FONT_DATA[1],
                 face: hb::Face::from_slice(FONT_DATA[1], 0).unwrap(),
-            }),
+            },
         );
 
-        let mut roboto = VariableFont {
+        let mut roboto = Font {
             raw_data: FONT_DATA[2],
             face: hb::Face::from_slice(FONT_DATA[2], 0).unwrap(),
         };
         roboto
             .face
             .set_variation(hb::ttf_parser::Tag::from_bytes(b"wght"), 400.0);
-        fonts.insert("roboto".into(), Font::VariableFont(roboto));
+        fonts.insert("roboto".into(), roboto);
 
-        let mut roboto_italic = VariableFont {
+        let mut roboto_italic = Font {
             raw_data: FONT_DATA[3],
             face: hb::Face::from_slice(FONT_DATA[3], 0).unwrap(),
         };
         roboto_italic
             .face
-            .set_variation(hb::ttf_parser::Tag::from_bytes(b"wght"), 400.0);
-        fonts.insert("roboto-italic".into(), Font::VariableFont(roboto_italic));
+            .set_variation(hb::ttf_parser::Tag::from_bytes(b"wght"), 600.0);
+        fonts.insert("roboto-italic".into(), roboto_italic);
 
-        let mut noto = VariableFont {
+        let mut noto = Font {
             raw_data: FONT_DATA[4],
             face: hb::Face::from_slice(FONT_DATA[4], 0).unwrap(),
         };
         noto.face
             .set_variation(hb::ttf_parser::Tag::from_bytes(b"wght"), 400.0);
-        fonts.insert("noto".into(), Font::VariableFont(noto));
+        fonts.insert("noto".into(), noto);
 
         let inputs = vec![
             Input {
                 text: "아무도 자의적인 체포, 구금 또는 추방을 당하지 않아야 합니다. 모든 사람은 자신의 권리와 의무, 그리고 자신에게 제기된 형사 혐의를 결정함에 있어 독립적이고 공정한 재판소에 의해 평등하게 공정하고 공개적인 심리를 받을 권리를 갖습니다. 아무도 자신의 사생활, 가족, 가정 또는 서신에 대한 자의적인 간섭이나 명예와 평판에 대한 공격을 받아서는 안 됩니다. 모든 사람은 그러한 간섭이나 공격으로부터 법의 보호를 받을 권리를 갖습니다.".into(),
-                spans: vec![],
                 paragraphs_fonts: vec!["seoul".into()],
                 fallback_font: "seoul".into(),
                 horizontal_alignment: HorizontalAlignment::Normal,
@@ -200,24 +169,21 @@ impl<'a> AppState<'a> {
             },
             Input {
                 text: "איש לא יהיה נתון למעצר, מעצר שרירותי או גירוש. לכל אדם הזכות לשוויון מלא למשפט הוגן ופומבי בפני בית דין עצמאי ובלתי משוחד, לצורך הכרעה בזכויותיו וחובותיו ובכל אישום פלילי המופנה נגדו. איש לא יהיה נתון להתערבות שרירותית בפרטיותו, במשפחתו, בביתו או בהתכתבויותיו, ולא לפגיעות בכבודו או בשמו הטוב. לכל אדם הזכות להגנת החוק מפני התערבויות או פגיעות כאלה.".into(),
-                spans: vec![],
                 paragraphs_fonts: vec!["noto".into()],
                 fallback_font: "noto".into(),
                 horizontal_alignment: HorizontalAlignment::Normal,
                 vertical_alignment: VerticalAlignment::Normal,
             },
             Input {
-                text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires.\n\n Toute personne a droit, en pleine égalité, à ce que sa cause soit entendue équitablement et publiquement par un tribunal indépendant et impartial, qui décidera de ses droits et obligations ainsi que du bien-fondé de toute accusation en matière pénale portée contre elle. Nul ne sera l'objet d'immixtions arbitraires dans sa vie privée, sa famille, son domicile ou sa correspondance, ni d'atteintes à son honneur et à sa réputation. Toute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.".into(),
-                spans: vec![],
-                paragraphs_fonts: vec!["pt".into(), "pt".into(), "pt".into()],
+                text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires.\n\nToute personne a droit, en pleine égalité, à ce que sa cause soit entendue équitablement et publiquement par un tribunal indépendant et impartial, qui décidera de ses droits et obligations ainsi que du bien-fondé de toute accusation en matière pénale portée contre elle. Nul ne sera l'objet d'immixtions arbitraires dans sa vie privée, sa famille, son domicile ou sa correspondance, ni d'atteintes à son honneur et à sa réputation. Toute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.\nFin.\n\n".into(),
+                paragraphs_fonts: vec!["pt".into(), "pt".into(), "pt".into(), "pt".into(), "pt".into(), "pt".into()],
                 fallback_font: "pt".into(),
                 horizontal_alignment: HorizontalAlignment::Normal,
                 vertical_alignment: VerticalAlignment::Normal,
             },
             Input {
-                text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires. \n איש לא יהיה נתון להתערבות שרירותית בפרטיותו, במשפחתו, בביתו או בהתכתבויותיו, ולא לפגיעות בכבודו או בשמו הטוב \nToute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.".into(),
-                spans: vec![],
-                paragraphs_fonts: vec!["roboto".into(), "noto".into(), "roboto".into()],
+                text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires. \n איש לא יהיה נתון להתערבות שרירותית בפרטיותו, במשפחתו, בביתו או בהתכתבויותיו, ולא לפגיעות בכבודו או בשמו הטוב\nToute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.".into(),
+                paragraphs_fonts: vec!["roboto-italic".into(), "noto".into(), "roboto".into()],
                 fallback_font: "roboto".into(),
                 horizontal_alignment: HorizontalAlignment::Normal,
                 vertical_alignment: VerticalAlignment::Normal,
@@ -241,8 +207,16 @@ impl<'a> AppState<'a> {
 
         for (i, paragraph) in bidi_info.paragraphs.iter().enumerate() {
             let line = paragraph.range.clone();
-            let display_str: String =
-                String::from(&self.inputs[input].text[line.start..line.end - 1]);
+            let display_str: String = String::from(if i == (bidi_info.paragraphs.len() - 1) {
+                let initial_guess = &self.inputs[input].text[line.start..line.end];
+                if initial_guess.ends_with("\n") {
+                    &self.inputs[input].text[line.start..line.end - 1]
+                } else {
+                    initial_guess
+                }
+            } else {
+                &self.inputs[input].text[line.start..line.end - 1]
+            });
             let is_rtl = paragraph.level.is_rtl();
 
             let mut font = self.fonts.get(&self.inputs[input].paragraphs_fonts[i]);
@@ -290,34 +264,17 @@ impl<'a> AppState<'a> {
                 baseline_point.x = (input_transform.x as f64) + PAD;
             }
 
-            match &font {
-                Font::StaticFont(f) => {
-                    let (glyphs, baseline) = self.shape_static_text(
-                        text,
-                        &f.face,
-                        input_transform,
-                        baseline_point,
-                        *is_rtl,
-                        PAD,
-                        line_height,
-                    );
-                    baseline_point = baseline;
-                    result.extend(glyphs);
-                }
-                Font::VariableFont(f) => {
-                    let (glyphs, baseline) = self.shape_static_text(
-                        text,
-                        &f.face,
-                        input_transform,
-                        baseline_point,
-                        *is_rtl,
-                        PAD,
-                        line_height,
-                    );
-                    baseline_point = baseline;
-                    result.extend(glyphs);
-                }
-            }
+            let (glyphs, baseline) = self.shape_static_text(
+                text,
+                &font.face,
+                input_transform,
+                baseline_point,
+                *is_rtl,
+                PAD,
+                line_height,
+            );
+            baseline_point = baseline;
+            result.extend(glyphs);
         }
 
         result
