@@ -316,6 +316,7 @@ impl<'a> AppState<'a> {
             let glyph_buffer = hb::shape(face, &[], buffer);
             let (shaped_glyphs, new_baseline) =
                 Self::perform_shaping(&glyph_buffer, face, baseline_point, input_transform, is_rtl);
+            let mut shaped_fragment = ShapedFragment::new(shaped_glyphs);
 
             if (new_baseline.x > ((input_transform.x + input_transform.w) as f64 - pad)
                 || new_baseline.x < (input_transform.x as f64 + pad))
@@ -323,22 +324,20 @@ impl<'a> AppState<'a> {
                 && segment != 0
             {
                 baseline_point.y += line_height;
-                baseline_point.x =
-                    input_transform.x as f64 + pad + (new_baseline.x - baseline_point.x).abs();
 
                 let new_baseline = DVec2::new(input_transform.x as f64 + pad, baseline_point.y);
 
-                let (shaped_glyphs, _) = Self::perform_shaping(
-                    &glyph_buffer,
-                    face,
-                    new_baseline,
-                    input_transform,
-                    is_rtl,
-                );
-                result.extend(shaped_glyphs);
+                for fragment in shaped_fragment.glyphs.iter_mut() {
+                    fragment.translate(DVec2::new(-baseline_point.x + new_baseline.x, line_height));
+                    result.push(fragment.svg_path_string.clone());
+                }
+
+                baseline_point.x = input_transform.x as f64 + pad + shaped_fragment.length;
             } else {
                 baseline_point = new_baseline;
-                result.extend(shaped_glyphs);
+                for fragment in shaped_fragment.glyphs.iter() {
+                    result.push(fragment.svg_path_string.clone());
+                }
             }
 
             prev_segment_index = segment;
@@ -353,10 +352,10 @@ impl<'a> AppState<'a> {
         baseline: DVec2,
         input_transform: &InputTransform,
         is_rtl: bool,
-    ) -> (Vec<String>, DVec2) {
+    ) -> (Vec<GlyphPath>, DVec2) {
         let mut result = vec![];
         let mut new_baseline = baseline;
-        let x_dir = 1.0; //if is_rtl { -1.0 } else { 1.0 };
+        let x_dir = 1.0;
         for (glyph, info) in glyph_buffer
             .glyph_positions()
             .iter()
@@ -368,23 +367,24 @@ impl<'a> AppState<'a> {
                 glyph.x_offset,
                 glyph.y_offset,
             );
+            let font_transform = Self::from_font_space_to_screen_space(&face, input_transform.size);
+            let advance = DVec2::new(advance_x as f64 * x_dir, advance_y as f64);
+            let advance = font_transform.transform_point2(advance);
             let glyph_id = hb::ttf_parser::GlyphId(info.glyph_id.try_into().unwrap());
 
             let offset = DVec2::new(offset_x as f64, offset_y as f64);
-            let font_transform = Self::from_font_space_to_screen_space(&face, input_transform.size);
             let glyph_transform = DAffine2::from_translation(new_baseline)
                 * font_transform
                 * DAffine2::from_translation(offset);
             let mut glyph_path = GlyphPath {
                 svg_path_string: "".into(),
                 transform: glyph_transform,
+                cmds: vec![],
+                advance_x: advance.x,
             };
-
             face.outline_glyph(glyph_id, &mut glyph_path);
-            result.push(glyph_path.svg_path_string);
+            result.push(glyph_path);
 
-            let advance = DVec2::new(advance_x as f64 * x_dir, advance_y as f64);
-            let advance = font_transform.transform_point2(advance);
             new_baseline += advance;
         }
         (result, new_baseline)
@@ -416,10 +416,38 @@ fn app_state() -> &'static mut AppState<'static> {
     }
 }
 
+struct ShapedFragment {
+    glyphs: Vec<GlyphPath>,
+    length: f64,
+}
+
+impl ShapedFragment {
+    fn new(glyphs: Vec<GlyphPath>) -> Self {
+        let mut length = 0.0;
+
+        for glyph in glyphs.iter() {
+            length += glyph.advance_x;
+        }
+
+        Self { glyphs, length }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum PathCmd {
+    M(DVec2),
+    L(DVec2),
+    Q(DVec2, DVec2),
+    C(DVec2, DVec2, DVec2),
+    Z,
+}
+
 #[derive(Debug, Clone)]
 struct GlyphPath {
     svg_path_string: String,
     transform: DAffine2,
+    cmds: Vec<PathCmd>,
+    advance_x: f64,
 }
 
 impl hb::ttf_parser::OutlineBuilder for GlyphPath {
@@ -427,12 +455,14 @@ impl hb::ttf_parser::OutlineBuilder for GlyphPath {
         let to = DVec2::new(x as f64, y as f64);
         let to = self.transform.transform_point2(to);
         self.svg_path_string += &format!("M{} {} ", to.x, to.y);
+        self.cmds.push(PathCmd::M(to));
     }
 
     fn line_to(&mut self, x: f32, y: f32) {
         let to = DVec2::new(x as f64, y as f64);
         let to = self.transform.transform_point2(to);
         self.svg_path_string += &format!("L{} {} ", to.x, to.y);
+        self.cmds.push(PathCmd::L(to));
     }
 
     fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
@@ -443,6 +473,7 @@ impl hb::ttf_parser::OutlineBuilder for GlyphPath {
         let p2 = self.transform.transform_point2(p2);
 
         self.svg_path_string += &format!("Q{} {},{} {} ", p1.x, p1.y, p2.x, p2.y);
+        self.cmds.push(PathCmd::Q(p1, p2));
     }
 
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
@@ -454,9 +485,46 @@ impl hb::ttf_parser::OutlineBuilder for GlyphPath {
         let p3 = self.transform.transform_point2(p3);
 
         self.svg_path_string += &format!("C{} {},{} {},{} {} ", p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+        self.cmds.push(PathCmd::C(p1, p2, p3));
     }
 
     fn close(&mut self) {
-        self.svg_path_string += &format!("Z ");
+        self.svg_path_string += "Z ";
+        self.cmds.push(PathCmd::Z);
+    }
+}
+
+impl GlyphPath {
+    fn translate(&mut self, offset: DVec2) {
+        self.svg_path_string.clear();
+        self.cmds.iter_mut().for_each(|cmd| match cmd {
+            PathCmd::M(to) => {
+                let to = *to + offset;
+                self.svg_path_string += &format!("M{} {} ", to.x, to.y);
+                *cmd = PathCmd::M(to);
+            }
+            PathCmd::L(to) => {
+                let to = *to + offset;
+                self.svg_path_string += &format!("L{} {} ", to.x, to.y);
+                *cmd = PathCmd::L(to);
+            }
+            PathCmd::Q(p1, p2) => {
+                let p1 = *p1 + offset;
+                let p2 = *p2 + offset;
+                self.svg_path_string += &format!("Q{} {},{} {} ", p1.x, p1.y, p2.x, p2.y);
+                *cmd = PathCmd::Q(p1, p2);
+            }
+            PathCmd::C(p1, p2, p3) => {
+                let p1 = *p1 + offset;
+                let p2 = *p2 + offset;
+                let p3 = *p3 + offset;
+                self.svg_path_string +=
+                    &format!("C{} {},{} {},{} {} ", p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+                *cmd = PathCmd::C(p1, p2, p3);
+            }
+            PathCmd::Z => {
+                self.svg_path_string += "Z ";
+            }
+        });
     }
 }
