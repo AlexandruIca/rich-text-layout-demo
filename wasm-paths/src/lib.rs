@@ -371,9 +371,10 @@ impl<'a> AppState<'a> {
             let glyph_id = hb::ttf_parser::GlyphId(info.glyph_id.try_into().unwrap());
 
             let offset = DVec2::new(offset_x as f64, offset_y as f64);
-            let font_transform =
-                Self::from_font_space_to_screen_space(&face, input_transform.size, offset);
-            let glyph_transform = DAffine2::from_translation(new_baseline) * font_transform;
+            let font_transform = Self::from_font_space_to_screen_space(&face, input_transform.size);
+            let glyph_transform = DAffine2::from_translation(new_baseline)
+                * font_transform
+                * DAffine2::from_translation(offset);
             let mut glyph_path = GlyphPath {
                 svg_path_string: "".into(),
                 transform: glyph_transform,
@@ -389,18 +390,14 @@ impl<'a> AppState<'a> {
         (result, new_baseline)
     }
 
-    fn from_font_space_to_screen_space(
-        face: &hb::Face,
-        text_size: usize,
-        offset: DVec2,
-    ) -> DAffine2 {
+    fn from_font_space_to_screen_space(face: &hb::Face, text_size: usize) -> DAffine2 {
         let units_per_em = face.units_per_em();
         let (ppem, upem) = (text_size as f64, units_per_em as f64);
         // `ppem` gives us the mapping between font units and screen pixels.
         // ppem stands for pixels per em.
         let to_px = ppem / upem;
 
-        DAffine2::from_scale(DVec2::new(to_px, -to_px)) * DAffine2::from_translation(offset)
+        DAffine2::from_scale(DVec2::new(to_px, -to_px))
     }
 }
 
