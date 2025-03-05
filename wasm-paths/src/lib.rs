@@ -24,6 +24,9 @@ macro_rules! log {
 struct AppState<'a> {
     fonts: FontRegistry<'a>,
     inputs: Vec<Input>,
+    last_input: usize,
+    last_text_size: usize,
+    already_performed_layout: bool,
 }
 
 struct InputTransform {
@@ -170,7 +173,13 @@ impl<'a> AppState<'a> {
             }
         ];
 
-        AppState::<'a> { fonts, inputs }
+        AppState::<'a> {
+            fonts,
+            inputs,
+            last_input: 0,
+            last_text_size: 16,
+            already_performed_layout: false,
+        }
     }
 
     fn resolve_input(&self, input_transform: &InputTransform, input: usize) -> Vec<String> {
@@ -229,82 +238,64 @@ impl<'a> AppState<'a> {
     ) -> Vec<String> {
         const PAD: f64 = 12.0;
         let line_height = 1.25 * (input_transform.size as f64);
+        let max_line_length = (input_transform.w as f64 - 2.0 * PAD).max(0.0);
         let mut result = vec![];
-        let mut current_height = (input_transform.y as f64) + PAD + line_height;
-        let mut glyphs_per_paragraph =
-            Vec::<(Vec<ShapedFragment>, bool)>::with_capacity(paragraphs.len());
 
-        for (text, font, is_rtl) in paragraphs {
-            let glyphs = self.shape_static_text(text, &font.face, input_transform, *is_rtl);
-            glyphs_per_paragraph.push((glyphs, *is_rtl));
+        let mut shaped_paragraphs = Vec::<ParagraphInfo>::with_capacity(paragraphs.len());
+        let mut total_number_of_lines = 0;
+
+        for (text, font, is_rtl) in paragraphs.iter() {
+            let shaped_fragments =
+                self.shape_static_text(text, &font.face, input_transform, *is_rtl);
+            let paragraph = ParagraphInfo::new(shaped_fragments, max_line_length, *is_rtl);
+            total_number_of_lines += paragraph.lines.len();
+            shaped_paragraphs.push(paragraph);
         }
 
-        for (_i, (glyphs, is_rtl)) in glyphs_per_paragraph.iter_mut().enumerate() {
-            let mut baseline = if *is_rtl {
-                DVec2::new(
-                    ((input_transform.x + input_transform.w) as f64) - PAD,
-                    current_height,
-                )
-            } else {
-                DVec2::new((input_transform.x as f64) + PAD, current_height)
-            };
+        let mut current_height = (input_transform.y as f64) + PAD + line_height;
 
-            let mut lines = vec![0.0_f64];
-            let max_line_length = (input_transform.w as f64 - 2.0 * PAD).max(0.0);
-            let mut current_line_length = 0.0;
+        for paragraph in shaped_paragraphs.iter_mut() {
+            let is_rtl = paragraph.is_rtl;
 
-            for (j, fragment) in glyphs.iter_mut().enumerate() {
-                current_line_length += fragment.length;
-
-                if current_line_length > max_line_length {
-                    current_line_length = fragment.length;
-                    lines.push(current_line_length);
-                    if j > 0 {
-                        current_height += line_height;
-                    }
-
-                    let new_baseline_x = if *is_rtl {
-                        ((input_transform.x + input_transform.w) as f64) - PAD - fragment.length
-                    } else {
-                        (input_transform.x as f64) + PAD
-                    };
-
-                    let offset = DVec2::new(new_baseline_x, current_height);
-                    for glyph in fragment.glyphs.iter_mut() {
-                        glyph.translate(offset);
-                        result.push(glyph.svg_path_string.clone());
-                    }
-
-                    baseline.x = if *is_rtl {
-                        new_baseline_x
-                    } else {
-                        new_baseline_x + fragment.length
-                    };
-                    baseline.y = current_height;
+            for line in paragraph.lines.iter() {
+                let mut baseline = if is_rtl {
+                    DVec2::new(
+                        ((input_transform.x + input_transform.w) as f64) - PAD,
+                        current_height,
+                    )
                 } else {
-                    *lines.last_mut().unwrap() += fragment.length;
+                    DVec2::new((input_transform.x as f64) + PAD, current_height)
+                };
 
-                    let new_baseline_x = if *is_rtl {
+                let start = line.first_fragment_index;
+                let end = if line.has_next_line {
+                    line.last_fragment_index
+                } else {
+                    paragraph.shaped_fragments.len()
+                };
+
+                for fragment in paragraph.shaped_fragments[start..end].iter_mut() {
+                    let new_baseline_x = if is_rtl {
                         baseline.x - fragment.length
                     } else {
                         baseline.x
                     };
 
-                    let offset = DVec2::new(new_baseline_x, current_height);
+                    let offset = DVec2::new(new_baseline_x, baseline.y);
                     for glyph in fragment.glyphs.iter_mut() {
                         glyph.translate(offset);
                         result.push(glyph.svg_path_string.clone());
                     }
 
-                    baseline.x = if *is_rtl {
+                    baseline.x = if is_rtl {
                         new_baseline_x
                     } else {
                         new_baseline_x + fragment.length
                     };
                 }
-            }
 
-            current_height += line_height;
+                current_height += line_height;
+            }
         }
 
         result
@@ -505,22 +496,19 @@ impl hb::ttf_parser::OutlineBuilder for GlyphPath {
 impl GlyphPath {
     fn translate(&mut self, offset: DVec2) {
         self.svg_path_string.clear();
-        self.cmds.iter_mut().for_each(|cmd| match cmd {
+        self.cmds.iter().for_each(|cmd| match cmd {
             PathCmd::M(to) => {
                 let to = *to + offset;
                 self.svg_path_string += &format!("M{} {} ", to.x, to.y);
-                *cmd = PathCmd::M(to);
             }
             PathCmd::L(to) => {
                 let to = *to + offset;
                 self.svg_path_string += &format!("L{} {} ", to.x, to.y);
-                *cmd = PathCmd::L(to);
             }
             PathCmd::Q(p1, p2) => {
                 let p1 = *p1 + offset;
                 let p2 = *p2 + offset;
                 self.svg_path_string += &format!("Q{} {},{} {} ", p1.x, p1.y, p2.x, p2.y);
-                *cmd = PathCmd::Q(p1, p2);
             }
             PathCmd::C(p1, p2, p3) => {
                 let p1 = *p1 + offset;
@@ -528,11 +516,67 @@ impl GlyphPath {
                 let p3 = *p3 + offset;
                 self.svg_path_string +=
                     &format!("C{} {},{} {},{} {} ", p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
-                *cmd = PathCmd::C(p1, p2, p3);
             }
             PathCmd::Z => {
                 self.svg_path_string += "Z ";
             }
         });
+    }
+}
+
+struct LineInfo {
+    first_fragment_index: usize,
+    last_fragment_index: usize,
+    line_length: f64,
+    has_next_line: bool,
+}
+
+struct ParagraphInfo {
+    shaped_fragments: Vec<ShapedFragment>,
+    lines: Vec<LineInfo>,
+    is_rtl: bool,
+}
+
+impl ParagraphInfo {
+    fn new(shaped_fragments: Vec<ShapedFragment>, max_line_length: f64, is_rtl: bool) -> Self {
+        let mut lines = vec![];
+
+        lines.push(LineInfo {
+            first_fragment_index: 0,
+            last_fragment_index: 0,
+            line_length: 0.0,
+            has_next_line: false,
+        });
+
+        let mut current_line_length = 0.0;
+
+        for (i, fragment) in shaped_fragments.iter().enumerate() {
+            current_line_length += fragment.length;
+
+            if current_line_length > max_line_length {
+                current_line_length = fragment.length;
+
+                if i > 0 {
+                    lines.last_mut().unwrap().last_fragment_index = i;
+                    lines.last_mut().unwrap().has_next_line = true;
+                    lines.push(LineInfo {
+                        first_fragment_index: i,
+                        last_fragment_index: i,
+                        line_length: fragment.length,
+                        has_next_line: false,
+                    });
+                } else {
+                    lines.last_mut().unwrap().line_length = current_line_length;
+                }
+            } else {
+                lines.last_mut().unwrap().line_length += fragment.length;
+            }
+        }
+
+        Self {
+            shaped_fragments,
+            lines,
+            is_rtl,
+        }
     }
 }
