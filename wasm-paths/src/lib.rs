@@ -168,7 +168,7 @@ impl<'a> AppState<'a> {
                 vertical_alignment: VerticalAlignment::Normal,
             },
             Input {
-                text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires. \n איש לא יהיה נתון להתערבות שרירותית בפרטיותו, במשפחתו, בביתו או בהתכתבויותיו, ולא לפגיעות בכבודו או בשמו הטוב\nToute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.".into(),
+                text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires.\nאיש לא יהיה נתון להתערבות שרירותית בפרטיותו, במשפחתו, בביתו או בהתכתבויותיו, ולא לפגיעות בכבודו או בשמו הטוב\nToute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.".into(),
                 paragraphs_fonts: vec!["roboto-italic".into(), "noto".into(), "roboto".into()],
                 fallback_font: "roboto".into(),
                 horizontal_alignment: HorizontalAlignment::Normal,
@@ -209,6 +209,8 @@ impl<'a> AppState<'a> {
         let mut layout_paragraps =
             Vec::<(String, &Font, bool)>::with_capacity(bidi_info.paragraphs.len());
 
+        let mut line_height = 0.0_f64;
+
         for (i, paragraph) in bidi_info.paragraphs.iter().enumerate() {
             let line = paragraph.range.clone();
             let display_str: String = String::from(if i == (bidi_info.paragraphs.len() - 1) {
@@ -240,12 +242,16 @@ impl<'a> AppState<'a> {
                 }
             }
             let font = font.unwrap_or(self.fonts.get(GLOBAL_FALLBACK_FONT).unwrap());
+            let face_height = (font.face.height() as f64) * (input_transform.size as f64)
+                / (font.face.units_per_em() as f64);
+            line_height = line_height.max(face_height);
             layout_paragraps.push((display_str, font, is_rtl));
         }
 
         let (result, new_layout) = self.perform_layout_on_paragraphs(
             input,
             input_transform,
+            line_height,
             &layout_paragraps,
             self.inputs[input].horizontal_alignment,
             self.inputs[input].vertical_alignment,
@@ -264,12 +270,11 @@ impl<'a> AppState<'a> {
         input_transform: &InputTransform,
         pad: f64,
         line_height: f64,
-        current_height: f64,
         num_lines: usize,
         v_align: VerticalAlignment,
     ) -> f64 {
         match v_align {
-            VerticalAlignment::Normal => current_height,
+            VerticalAlignment::Normal => (input_transform.y as f64) + pad + line_height,
             VerticalAlignment::Center => {
                 let center_baseline = (input_transform.y as f64)
                     + (input_transform.h as f64) / 2.0
@@ -322,12 +327,12 @@ impl<'a> AppState<'a> {
         &self,
         input: usize,
         input_transform: &InputTransform,
+        line_height: f64,
         paragraphs: &[(String, &Font, bool)],
         h_align: HorizontalAlignment,
         v_align: VerticalAlignment,
     ) -> (Vec<String>, Option<Vec<Vec<ShapedFragment>>>) {
         const PAD: f64 = 12.0;
-        let line_height = 1.25 * (input_transform.size as f64);
         let max_line_length = (input_transform.w as f64 - 2.0 * PAD).max(0.0);
         let mut result = vec![];
         let mut new_layout = None;
@@ -355,12 +360,10 @@ impl<'a> AppState<'a> {
             }
         }
 
-        let init_height = (input_transform.y as f64) + PAD + line_height;
         let mut baseline_y = Self::init_baseline_y(
             input_transform,
             PAD,
             line_height,
-            init_height,
             total_number_of_lines,
             v_align,
         );
