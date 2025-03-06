@@ -66,6 +66,7 @@ const FONT_DATA: [&'static [u8]; 5] = [
     include_bytes!("../fonts/NotoSansHebrew-VariableFont_wdth,wght.ttf"),
 ];
 
+#[derive(Debug, Clone, Copy)]
 enum HorizontalAlignment {
     Normal,
     Reverse,
@@ -78,6 +79,7 @@ impl Default for HorizontalAlignment {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 enum VerticalAlignment {
     Normal,
     Reverse,
@@ -148,8 +150,8 @@ impl<'a> AppState<'a> {
                 text: "아무도 자의적인 체포, 구금 또는 추방을 당하지 않아야 합니다. 모든 사람은 자신의 권리와 의무, 그리고 자신에게 제기된 형사 혐의를 결정함에 있어 독립적이고 공정한 재판소에 의해 평등하게 공정하고 공개적인 심리를 받을 권리를 갖습니다. 아무도 자신의 사생활, 가족, 가정 또는 서신에 대한 자의적인 간섭이나 명예와 평판에 대한 공격을 받아서는 안 됩니다. 모든 사람은 그러한 간섭이나 공격으로부터 법의 보호를 받을 권리를 갖습니다.".into(),
                 paragraphs_fonts: vec!["seoul".into()],
                 fallback_font: "seoul".into(),
-                horizontal_alignment: HorizontalAlignment::Normal,
-                vertical_alignment: VerticalAlignment::Normal,
+                horizontal_alignment: HorizontalAlignment::Center,
+                vertical_alignment: VerticalAlignment::Reverse,
             },
             Input {
                 text: "איש לא יהיה נתון למעצר, מעצר שרירותי או גירוש. לכל אדם הזכות לשוויון מלא למשפט הוגן ופומבי בפני בית דין עצמאי ובלתי משוחד, לצורך הכרעה בזכויותיו וחובותיו ובכל אישום פלילי המופנה נגדו. איש לא יהיה נתון להתערבות שרירותית בפרטיותו, במשפחתו, בביתו או בהתכתבויותיו, ולא לפגיעות בכבודו או בשמו הטוב. לכל אדם הזכות להגנת החוק מפני התערבויות או פגיעות כאלה.".into(),
@@ -162,7 +164,7 @@ impl<'a> AppState<'a> {
                 text: "Nul ne sera soumis à une arrestation, une détention ou un exil arbitraires.\n\nToute personne a droit, en pleine égalité, à ce que sa cause soit entendue équitablement et publiquement par un tribunal indépendant et impartial, qui décidera de ses droits et obligations ainsi que du bien-fondé de toute accusation en matière pénale portée contre elle. Nul ne sera l'objet d'immixtions arbitraires dans sa vie privée, sa famille, son domicile ou sa correspondance, ni d'atteintes à son honneur et à sa réputation. Toute personne a droit à la protection de la loi contre de telles immixtions ou de telles atteintes.\nFin.\n\n".into(),
                 paragraphs_fonts: vec!["pt".into(), "pt".into(), "pt".into(), "pt".into(), "pt".into(), "pt".into()],
                 fallback_font: "pt".into(),
-                horizontal_alignment: HorizontalAlignment::Normal,
+                horizontal_alignment: HorizontalAlignment::Reverse,
                 vertical_alignment: VerticalAlignment::Normal,
             },
             Input {
@@ -170,7 +172,7 @@ impl<'a> AppState<'a> {
                 paragraphs_fonts: vec!["roboto-italic".into(), "noto".into(), "roboto".into()],
                 fallback_font: "roboto".into(),
                 horizontal_alignment: HorizontalAlignment::Normal,
-                vertical_alignment: VerticalAlignment::Normal,
+                vertical_alignment: VerticalAlignment::Center,
             }
         ];
 
@@ -241,8 +243,13 @@ impl<'a> AppState<'a> {
             layout_paragraps.push((display_str, font, is_rtl));
         }
 
-        let (result, new_layout) =
-            self.perform_layout_on_paragraphs(input, input_transform, &layout_paragraps);
+        let (result, new_layout) = self.perform_layout_on_paragraphs(
+            input,
+            input_transform,
+            &layout_paragraps,
+            self.inputs[input].horizontal_alignment,
+            self.inputs[input].vertical_alignment,
+        );
         self.already_performed_layout = true;
         if let Some(value) = new_layout {
             self.prev_layout = value;
@@ -253,11 +260,71 @@ impl<'a> AppState<'a> {
         result
     }
 
+    fn init_baseline_y(
+        input_transform: &InputTransform,
+        pad: f64,
+        line_height: f64,
+        current_height: f64,
+        num_lines: usize,
+        v_align: VerticalAlignment,
+    ) -> f64 {
+        match v_align {
+            VerticalAlignment::Normal => current_height,
+            VerticalAlignment::Center => {
+                let center_baseline = (input_transform.y as f64)
+                    + (input_transform.h as f64) / 2.0
+                    + line_height / 2.0;
+
+                center_baseline - line_height * (num_lines as f64) / 2.0
+            }
+            VerticalAlignment::Reverse => {
+                let bottom_baseline = (input_transform.y + input_transform.h) as f64 - pad;
+
+                bottom_baseline - line_height * (num_lines as f64)
+            }
+        }
+    }
+
+    fn init_baseline_x(
+        input_transform: &InputTransform,
+        pad: f64,
+        is_rtl: bool,
+        h_align: HorizontalAlignment,
+        line_length: f64,
+    ) -> f64 {
+        match (is_rtl, h_align) {
+            (false, HorizontalAlignment::Normal) => (input_transform.x as f64) + pad,
+            (true, HorizontalAlignment::Normal) => {
+                ((input_transform.x + input_transform.w) as f64) - pad
+            }
+            (false, HorizontalAlignment::Center) => {
+                (input_transform.x as f64) + (input_transform.w as f64) / 2.0 - line_length / 2.0
+            }
+            (true, HorizontalAlignment::Center) => {
+                (input_transform.x as f64) + (input_transform.w as f64) / 2.0 + line_length / 2.0
+            }
+            (false, HorizontalAlignment::Reverse) => {
+                let start = (input_transform.x as f64) + pad;
+                let textbox_width = input_transform.w as f64 - 2.0 * pad;
+
+                start + (textbox_width - line_length)
+            }
+            (true, HorizontalAlignment::Reverse) => {
+                let start = ((input_transform.x + input_transform.w) as f64) - pad;
+                let textbox_width = input_transform.w as f64 - 2.0 * pad;
+
+                start - (textbox_width - line_length)
+            }
+        }
+    }
+
     fn perform_layout_on_paragraphs(
         &self,
         input: usize,
         input_transform: &InputTransform,
         paragraphs: &[(String, &Font, bool)],
+        h_align: HorizontalAlignment,
+        v_align: VerticalAlignment,
     ) -> (Vec<String>, Option<Vec<Vec<ShapedFragment>>>) {
         const PAD: f64 = 12.0;
         let line_height = 1.25 * (input_transform.size as f64);
@@ -288,20 +355,22 @@ impl<'a> AppState<'a> {
             }
         }
 
-        let mut current_height = (input_transform.y as f64) + PAD + line_height;
+        let init_height = (input_transform.y as f64) + PAD + line_height;
+        let mut baseline_y = Self::init_baseline_y(
+            input_transform,
+            PAD,
+            line_height,
+            init_height,
+            total_number_of_lines,
+            v_align,
+        );
 
         for paragraph in shaped_paragraphs.iter_mut() {
             let is_rtl = paragraph.is_rtl;
 
             for line in paragraph.lines.iter() {
-                let mut baseline = if is_rtl {
-                    DVec2::new(
-                        ((input_transform.x + input_transform.w) as f64) - PAD,
-                        current_height,
-                    )
-                } else {
-                    DVec2::new((input_transform.x as f64) + PAD, current_height)
-                };
+                let mut baseline_x =
+                    Self::init_baseline_x(input_transform, PAD, is_rtl, h_align, line.line_length);
 
                 let start = line.first_fragment_index;
                 let end = if line.has_next_line {
@@ -312,25 +381,25 @@ impl<'a> AppState<'a> {
 
                 for fragment in paragraph.shaped_fragments[start..end].iter_mut() {
                     let new_baseline_x = if is_rtl {
-                        baseline.x - fragment.length
+                        baseline_x - fragment.length
                     } else {
-                        baseline.x
+                        baseline_x
                     };
 
-                    let offset = DVec2::new(new_baseline_x, baseline.y);
+                    let offset = DVec2::new(new_baseline_x, baseline_y);
                     for glyph in fragment.glyphs.iter_mut() {
                         glyph.translate(offset);
                         result.push(glyph.svg_path_string.clone());
                     }
 
-                    baseline.x = if is_rtl {
+                    baseline_x = if is_rtl {
                         new_baseline_x
                     } else {
                         new_baseline_x + fragment.length
                     };
                 }
 
-                current_height += line_height;
+                baseline_y += line_height;
             }
         }
 
