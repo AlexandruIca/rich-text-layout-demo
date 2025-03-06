@@ -27,6 +27,7 @@ struct AppState<'a> {
     last_input: usize,
     last_text_size: usize,
     already_performed_layout: bool,
+    prev_layout: Vec<Vec<ShapedFragment>>,
 }
 
 struct InputTransform {
@@ -179,10 +180,22 @@ impl<'a> AppState<'a> {
             last_input: 0,
             last_text_size: 16,
             already_performed_layout: false,
+            prev_layout: vec![],
         }
     }
 
-    fn resolve_input(&self, input_transform: &InputTransform, input: usize) -> Vec<String> {
+    fn needs_to_redo_layout(&self, input: usize, text_size: usize) -> bool {
+        if input != self.last_input {
+            return true;
+        }
+        if text_size != self.last_text_size {
+            return true;
+        }
+
+        !self.already_performed_layout
+    }
+
+    fn resolve_input(&mut self, input_transform: &InputTransform, input: usize) -> Vec<String> {
         use icu::properties::bidi::BidiClassAdapter;
         use icu::properties::maps;
         use unicode_bidi::BidiInfo;
@@ -228,28 +241,51 @@ impl<'a> AppState<'a> {
             layout_paragraps.push((display_str, font, is_rtl));
         }
 
-        self.perform_layout_on_paragraphs(input_transform, &layout_paragraps)
+        let (result, new_layout) =
+            self.perform_layout_on_paragraphs(input, input_transform, &layout_paragraps);
+        self.already_performed_layout = true;
+        if let Some(value) = new_layout {
+            self.prev_layout = value;
+            self.last_input = input;
+            self.last_text_size = input_transform.size;
+        }
+
+        result
     }
 
     fn perform_layout_on_paragraphs(
         &self,
+        input: usize,
         input_transform: &InputTransform,
         paragraphs: &[(String, &Font, bool)],
-    ) -> Vec<String> {
+    ) -> (Vec<String>, Option<Vec<Vec<ShapedFragment>>>) {
         const PAD: f64 = 12.0;
         let line_height = 1.25 * (input_transform.size as f64);
         let max_line_length = (input_transform.w as f64 - 2.0 * PAD).max(0.0);
         let mut result = vec![];
+        let mut new_layout = None;
 
-        let mut shaped_paragraphs = Vec::<ParagraphInfo>::with_capacity(paragraphs.len());
         let mut total_number_of_lines = 0;
+        let mut shaped_paragraphs = Vec::<ParagraphInfo>::with_capacity(paragraphs.len());
 
-        for (text, font, is_rtl) in paragraphs.iter() {
-            let shaped_fragments =
-                self.shape_static_text(text, &font.face, input_transform, *is_rtl);
-            let paragraph = ParagraphInfo::new(shaped_fragments, max_line_length, *is_rtl);
-            total_number_of_lines += paragraph.lines.len();
-            shaped_paragraphs.push(paragraph);
+        if self.needs_to_redo_layout(input, input_transform.size) {
+            new_layout = Some(vec![]);
+
+            for (text, font, is_rtl) in paragraphs.iter() {
+                let shaped_fragments =
+                    self.shape_static_text(text, &font.face, input_transform, *is_rtl);
+                new_layout.as_mut().unwrap().push(shaped_fragments.clone());
+                let paragraph = ParagraphInfo::new(shaped_fragments, max_line_length, *is_rtl);
+                total_number_of_lines += paragraph.lines.len();
+                shaped_paragraphs.push(paragraph);
+            }
+        } else {
+            for (i, (_, _, is_rtl)) in paragraphs.iter().enumerate() {
+                let shaped_fragments = self.prev_layout[i].clone();
+                let paragraph = ParagraphInfo::new(shaped_fragments, max_line_length, *is_rtl);
+                total_number_of_lines += paragraph.lines.len();
+                shaped_paragraphs.push(paragraph);
+            }
         }
 
         let mut current_height = (input_transform.y as f64) + PAD + line_height;
@@ -298,7 +334,7 @@ impl<'a> AppState<'a> {
             }
         }
 
-        result
+        (result, new_layout)
     }
 
     fn shape_static_text(
@@ -415,6 +451,7 @@ fn app_state() -> &'static mut AppState<'static> {
     }
 }
 
+#[derive(Clone)]
 struct ShapedFragment {
     glyphs: Vec<GlyphPath>,
     length: f64,
@@ -524,6 +561,7 @@ impl GlyphPath {
     }
 }
 
+#[derive(Clone)]
 struct LineInfo {
     first_fragment_index: usize,
     last_fragment_index: usize,
@@ -531,6 +569,7 @@ struct LineInfo {
     has_next_line: bool,
 }
 
+#[derive(Clone)]
 struct ParagraphInfo {
     shaped_fragments: Vec<ShapedFragment>,
     lines: Vec<LineInfo>,
